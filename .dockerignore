@@ -1,0 +1,70 @@
+# === Control versioning ===
+.git
+.gitignore
+.gitattributes
+
+# === Build artefacts ===
+build/
+out/
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+*.obj
+*.lib
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+
+# === CMake ===
+CMakeCache.txt
+CMakeFiles/
+CMakeSettings.json
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+
+# === Visual Studio ===
+.vs/
+*.user
+*.suo
+*.vcxproj.user
+*.sln.docstates
+*.opensdf
+*.sdf
+
+# === Other IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.venv/
+venv/
+env/
+.Python
+*.egg-info/
+dist/
+wheelhouse/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === Docker ===
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# === Miscellaneous ===
+*.log
+*.tmp
