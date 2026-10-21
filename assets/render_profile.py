@@ -1,6 +1,12 @@
 """Generate a Fibonacci (Vogel spiral) avatar (PNG) and an animated banner (SVG, dark + light)."""
+from pathlib import Path
+
 import numpy as np
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
+from matplotlib.path import Path as MplPath
+from matplotlib.textpath import TextPath
 
 # --- Pattern parameters ---
 FAMILY = 21              # Fibonacci number: dots with same index mod FAMILY form one parastichy
@@ -12,7 +18,9 @@ GOLDEN_ANGLE = np.pi * (3 - np.sqrt(5))
 # --- Avatar parameters ---
 AVATAR_N = 500
 AVATAR_PX = 1024
-BACKGROUND = "#081A3A"
+AVATAR_THEME = "dark"    # background gradient + glow are taken from THEMES, like the banner
+AVATAR_VIEW = 1.18       # half-width of the view in disk radii: margin for GitHub's circular crop
+GLOW_RADIUS = 2.2        # glow radius in disk radii (shared by avatar and banner)
 
 # --- Banner parameters ---
 BANNER_W, BANNER_H = 1280, 320
@@ -28,9 +36,15 @@ WAVE_SCALE = 1.5         # dot size multiplier at the crest
 WAVE_DIM = 0.55          # opacity multiplier in the trough
 NAME = "François Margall"
 TAGLINE = "BRDF · Light transport · GPU computing"
+FONTS_DIR = Path(__file__).parent / "fonts"
+NAME_FONT = FONTS_DIR / "JosefinSans-SemiBold.ttf"
+TAGLINE_FONT = FONTS_DIR / "JosefinSans-Thin.ttf"
+# bg_from/bg_to: diagonal background gradient; glow: soft halo behind the spiral
 THEMES = {
-    "dark":  {"bg": "#081A3A", "dot": "#FFFFFF", "text": "#FFFFFF"},
-    "light": {"bg": "#FFFFFF", "dot": "#081A3A", "text": "#081A3A"},
+    "dark":  {"bg_from": "#0D2552", "bg_to": "#050F25", "glow": "#2A5CB8", "glow_opacity": 0.35,
+              "dot": "#FFFFFF", "text": "#FFFFFF", "border_opacity": 0.10},
+    "light": {"bg_from": "#FFFFFF", "bg_to": "#EDF1F8", "glow": "#C9D7EE", "glow_opacity": 0.70,
+              "dot": "#081A3A", "text": "#081A3A", "border_opacity": 0.08},
 }
 
 
@@ -53,26 +67,60 @@ def vogel(n_dots):
     return x, y, r, alpha
 
 
+def avatar_background(theme):
+    """RGB image of the banner background: diagonal gradient plus a glow centered on the disk."""
+    colors = THEMES[theme]
+    to_rgb = lambda c: np.array(mcolors.to_rgb(c))
+    u = np.linspace(0, 1, AVATAR_PX)
+    t = (u[None, :] + u[:, None]) / 2                # 0 top-left -> 1 bottom-right, as the SVG gradient
+    img = to_rgb(colors["bg_from"]) * (1 - t[..., None]) + to_rgb(colors["bg_to"]) * t[..., None]
+
+    # Same falloff as the SVG radialGradient: opacity linear from glow_opacity at the center to 0
+    s = np.linspace(-AVATAR_VIEW, AVATAR_VIEW, AVATAR_PX)
+    d = np.hypot(s[None, :], s[:, None])
+    glow = colors["glow_opacity"] * np.clip(1 - d / GLOW_RADIUS, 0, 1)
+    return img * (1 - glow[..., None]) + to_rgb(colors["glow"]) * glow[..., None]
+
+
 def render_avatar(out_path):
     x, y, r, alpha = vogel(AVATAR_N)
     sizes = 20 + 90 * r                              # matplotlib marker area, grows with radius
-    colors = np.ones((AVATAR_N, 4))
-    colors[:, 3] = alpha                             # pure white, gradient in alpha
+    colors = np.zeros((AVATAR_N, 4))
+    colors[:, :3] = mcolors.to_rgb(THEMES[AVATAR_THEME]["dot"])
+    colors[:, 3] = alpha                             # solid dot color, gradient in alpha
 
     dpi = 100
     fig = plt.figure(figsize=(AVATAR_PX / dpi, AVATAR_PX / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])
-    fig.patch.set_facecolor(BACKGROUND)
-    ax.set_facecolor(BACKGROUND)
-    ax.scatter(x, y, s=sizes, c=colors, linewidths=0)
-    # Margin so the disk survives GitHub's circular crop
-    ax.set_xlim(-1.18, 1.18)
-    ax.set_ylim(-1.18, 1.18)
+    ax.imshow(avatar_background(AVATAR_THEME), interpolation="bilinear", zorder=0,
+              extent=(-AVATAR_VIEW, AVATAR_VIEW, -AVATAR_VIEW, AVATAR_VIEW))
+    ax.scatter(x, y, s=sizes, c=colors, linewidths=0, zorder=1)
+    ax.set_xlim(-AVATAR_VIEW, AVATAR_VIEW)
+    ax.set_ylim(-AVATAR_VIEW, AVATAR_VIEW)
     ax.set_aspect("equal")
     ax.axis("off")
-    fig.savefig(out_path, dpi=dpi, facecolor=BACKGROUND)
+    fig.savefig(out_path, dpi=dpi)
     plt.close(fig)
     print(f"Saved {out_path}")
+
+
+def text_to_svg_path(text, font_file, size, x, y):
+    """Outline text as an SVG path 'd' string, baseline-left anchored at (x, y).
+
+    GitHub serves README images through <img>, which never loads external fonts,
+    so the glyphs are baked in as geometry instead of relying on a font-family.
+    """
+    path = TextPath((0, 0), text, size=size, prop=FontProperties(fname=font_file))
+    ops = {MplPath.MOVETO: "M", MplPath.LINETO: "L", MplPath.CURVE3: "Q", MplPath.CURVE4: "C"}
+    parts = []
+    for verts, code in path.iter_segments():
+        if code == MplPath.CLOSEPOLY:
+            parts.append("Z")
+            continue
+        pts = verts.reshape(-1, 2)
+        coords = " ".join(f"{x + vx:.1f} {y - vy:.1f}" for vx, vy in pts)  # SVG y axis points down
+        parts.append(f"{ops[code]}{coords}")
+    return "".join(parts)
 
 
 def render_banner(theme, out_path, animated=True):
@@ -122,28 +170,47 @@ def render_banner(theme, out_path, animated=True):
             f'from="0 {cx} {cy}" to="360 {cx} {cy}" dur="{ROTATION_PERIOD_S}s" '
             f'repeatCount="indefinite"/>') if animated else ""
 
-    # A soft fade on the left keeps the name readable over the spiral
+    name_d = text_to_svg_path(NAME, NAME_FONT, 54, 72, 168)
+    tagline_d = text_to_svg_path(TAGLINE, TAGLINE_FONT, 24, 74, 214)
+
+    # The fade is a mask on the dots (not an overlay) so the gradient background shows through.
+    # The glow sits behind the spiral and gives the flat background some depth.
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BANNER_W} {BANNER_H}" width="{BANNER_W}" height="{BANNER_H}">
 <defs>
   {wave_css}
   <clipPath id="frame"><rect width="{BANNER_W}" height="{BANNER_H}" rx="14"/></clipPath>
-  <linearGradient id="fade" x1="0" x2="1">
-    <stop offset="0.45" stop-color="{colors['bg']}" stop-opacity="1"/>
-    <stop offset="0.70" stop-color="{colors['bg']}" stop-opacity="0"/>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="{colors['bg_from']}"/>
+    <stop offset="1" stop-color="{colors['bg_to']}"/>
   </linearGradient>
+  <radialGradient id="glow" gradientUnits="userSpaceOnUse" cx="{cx}" cy="{cy}" r="{GLOW_RADIUS * BANNER_RADIUS:.0f}">
+    <stop offset="0" stop-color="{colors['glow']}" stop-opacity="{colors['glow_opacity']}"/>
+    <stop offset="1" stop-color="{colors['glow']}" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="fade" x1="0" x2="1">
+    <stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0"/>
+    <stop offset="0.70" stop-color="#FFFFFF" stop-opacity="1"/>
+  </linearGradient>
+  <mask id="fade-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="{BANNER_W}" height="{BANNER_H}">
+    <rect width="{BANNER_W}" height="{BANNER_H}" fill="url(#fade)"/>
+  </mask>
 </defs>
 <g clip-path="url(#frame)">
-  <rect width="{BANNER_W}" height="{BANNER_H}" fill="{colors['bg']}"/>
-  <g fill="{colors['dot']}">
-    {anim}
+  <rect width="{BANNER_W}" height="{BANNER_H}" fill="url(#bg)"/>
+  <rect width="{BANNER_W}" height="{BANNER_H}" fill="url(#glow)"/>
+  <g mask="url(#fade-mask)">
+    <g fill="{colors['dot']}">
+      {anim}
 {dots}
+    </g>
   </g>
-  <rect width="{BANNER_W}" height="{BANNER_H}" fill="url(#fade)"/>
-  <g fill="{colors['text']}" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
-    <text x="72" y="168" font-size="52" font-weight="600" letter-spacing="0.5">{NAME}</text>
-    <text x="74" y="212" font-size="20" fill-opacity="0.72">{TAGLINE}</text>
+  <g fill="{colors['text']}">
+    <path d="{name_d}"/>
+    <path d="{tagline_d}" fill-opacity="0.85"/>
   </g>
 </g>
+<rect x="0.5" y="0.5" width="{BANNER_W - 1}" height="{BANNER_H - 1}" rx="13.5" fill="none"
+      stroke="{colors['text']}" stroke-opacity="{colors['border_opacity']}"/>
 </svg>
 """
     with open(out_path, "w", encoding="utf-8") as f:
