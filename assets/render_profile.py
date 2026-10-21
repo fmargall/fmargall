@@ -1,12 +1,15 @@
-"""Generate a Fibonacci (Vogel spiral) avatar (PNG) and an animated banner (SVG, dark + light)."""
+"""Generate a Fibonacci (Vogel spiral) avatar (PNG), an animated banner (SVG, dark + light)
+and a static social preview (PNG)."""
 from pathlib import Path
 
 import numpy as np
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
+from matplotlib.patches import PathPatch
 from matplotlib.path import Path as MplPath
 from matplotlib.textpath import TextPath
+from matplotlib.transforms import Affine2D
 
 # --- Pattern parameters ---
 FAMILY = 21              # Fibonacci number: dots with same index mod FAMILY form one parastichy
@@ -34,6 +37,17 @@ WAVE_INTERVAL_S = 5.0    # time between the emission of two successive waves at 
 WAVE_WIDTH_PX = 100      # crest thickness in px (stays constant when the speed changes)
 WAVE_SCALE = 1.5         # dot size multiplier at the crest
 WAVE_DIM = 0.55          # opacity multiplier in the trough
+
+# --- Social preview parameters (static PNG for the repository settings) ---
+SOCIAL_W, SOCIAL_H = 1280, 640
+SOCIAL_THEME = "dark"
+SOCIAL_RADIUS = 250      # spiral radius in px
+SOCIAL_CENTER = (980, 320)
+SOCIAL_NAME_SIZE = 72    # text sizes in px; positions are baseline-left
+SOCIAL_NAME_POS = (96, 334)
+SOCIAL_TAGLINE_SIZE = 32
+SOCIAL_TAGLINE_POS = (99, 392)
+
 NAME = "François Margall"
 TAGLINE = "BRDF · Light transport · GPU computing"
 FONTS_DIR = Path(__file__).parent / "fonts"
@@ -67,18 +81,19 @@ def vogel(n_dots):
     return x, y, r, alpha
 
 
-def avatar_background(theme):
-    """RGB image of the banner background: diagonal gradient plus a glow centered on the disk."""
+def background_image(theme, width, height, center, glow_radius):
+    """RGB image of the banner background: diagonal gradient plus a glow at center (in px)."""
     colors = THEMES[theme]
     to_rgb = lambda c: np.array(mcolors.to_rgb(c))
-    u = np.linspace(0, 1, AVATAR_PX)
-    t = (u[None, :] + u[:, None]) / 2                # 0 top-left -> 1 bottom-right, as the SVG gradient
+    u = np.linspace(0, 1, width)[None, :]
+    v = np.linspace(0, 1, height)[:, None]
+    t = (u + v) / 2                                  # 0 top-left -> 1 bottom-right, as the SVG gradient
     img = to_rgb(colors["bg_from"]) * (1 - t[..., None]) + to_rgb(colors["bg_to"]) * t[..., None]
 
     # Same falloff as the SVG radialGradient: opacity linear from glow_opacity at the center to 0
-    s = np.linspace(-AVATAR_VIEW, AVATAR_VIEW, AVATAR_PX)
-    d = np.hypot(s[None, :], s[:, None])
-    glow = colors["glow_opacity"] * np.clip(1 - d / GLOW_RADIUS, 0, 1)
+    px, py = np.arange(width)[None, :] + 0.5, np.arange(height)[:, None] + 0.5
+    d = np.hypot(px - center[0], py - center[1])
+    glow = colors["glow_opacity"] * np.clip(1 - d / glow_radius, 0, 1)
     return img * (1 - glow[..., None]) + to_rgb(colors["glow"]) * glow[..., None]
 
 
@@ -92,12 +107,52 @@ def render_avatar(out_path):
     dpi = 100
     fig = plt.figure(figsize=(AVATAR_PX / dpi, AVATAR_PX / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])
-    ax.imshow(avatar_background(AVATAR_THEME), interpolation="bilinear", zorder=0,
+    disk_px = AVATAR_PX / (2 * AVATAR_VIEW)          # disk radius in px
+    bg = background_image(AVATAR_THEME, AVATAR_PX, AVATAR_PX,
+                          (AVATAR_PX / 2, AVATAR_PX / 2), GLOW_RADIUS * disk_px)
+    ax.imshow(bg, interpolation="bilinear", zorder=0,
               extent=(-AVATAR_VIEW, AVATAR_VIEW, -AVATAR_VIEW, AVATAR_VIEW))
     ax.scatter(x, y, s=sizes, c=colors, linewidths=0, zorder=1)
     ax.set_xlim(-AVATAR_VIEW, AVATAR_VIEW)
     ax.set_ylim(-AVATAR_VIEW, AVATAR_VIEW)
     ax.set_aspect("equal")
+    ax.axis("off")
+    fig.savefig(out_path, dpi=dpi)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+def render_social_preview(out_path):
+    """Static banner layout at the 2:1 size GitHub expects for a repository social preview."""
+    colors = THEMES[SOCIAL_THEME]
+    x, y, r, alpha = vogel(BANNER_N)
+    cx, cy = SOCIAL_CENTER
+    px = cx + SOCIAL_RADIUS * x
+    py = cy - SOCIAL_RADIUS * y                      # image y axis points down, like the SVG
+    radii = (1.3 + 1.9 * r) * SOCIAL_RADIUS / BANNER_RADIUS   # banner dot sizes, scaled up
+
+    dpi = 100
+    pt_per_px = 72 / dpi
+    dot_colors = np.zeros((BANNER_N, 4))
+    dot_colors[:, :3] = mcolors.to_rgb(colors["dot"])
+    dot_colors[:, 3] = alpha
+
+    # Axes in pixel units with the origin top-left, so every position matches the SVG banner
+    fig = plt.figure(figsize=(SOCIAL_W / dpi, SOCIAL_H / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])
+    bg = background_image(SOCIAL_THEME, SOCIAL_W, SOCIAL_H, SOCIAL_CENTER, GLOW_RADIUS * SOCIAL_RADIUS)
+    ax.imshow(bg, interpolation="bilinear", zorder=0, extent=(0, SOCIAL_W, SOCIAL_H, 0))
+    ax.scatter(px, py, s=(2 * radii * pt_per_px) ** 2, c=dot_colors, linewidths=0, zorder=1)
+
+    for text, font, size, (tx, ty), opacity in [
+            (NAME, NAME_FONT, SOCIAL_NAME_SIZE, SOCIAL_NAME_POS, 1.0),
+            (TAGLINE, TAGLINE_FONT, SOCIAL_TAGLINE_SIZE, SOCIAL_TAGLINE_POS, 0.85)]:
+        path = TextPath((0, 0), text, size=size, prop=FontProperties(fname=font))
+        path = Affine2D().scale(1, -1).translate(tx, ty).transform_path(path)
+        ax.add_patch(PathPatch(path, facecolor=colors["text"], alpha=opacity, linewidth=0, zorder=2))
+
+    ax.set_xlim(0, SOCIAL_W)
+    ax.set_ylim(SOCIAL_H, 0)
     ax.axis("off")
     fig.savefig(out_path, dpi=dpi)
     plt.close(fig)
@@ -220,5 +275,6 @@ def render_banner(theme, out_path, animated=True):
 
 if __name__ == "__main__":
     render_avatar(f"avatar.png")
+    render_social_preview("social_preview.png")
     for theme in THEMES:
         render_banner(theme, f"banner_{theme}.svg")
